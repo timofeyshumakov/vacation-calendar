@@ -662,6 +662,15 @@
         
         <v-card-actions>
           <v-spacer></v-spacer>
+          <v-btn 
+            v-if="overtimeForm.id && overtimeForm.employeeId === currentUser?.ID"
+            color="error" 
+            variant="text" 
+            @click="deleteOvertimeItem"
+            :disabled="!overtimeForm.id"
+          >
+            Удалить
+          </v-btn>
           <v-btn color="secondary" variant="text" @click="overtimeDialog = false">
             Отмена
           </v-btn>
@@ -2652,6 +2661,7 @@ const openOvertimeEditDialog = (employee, period) => {
   
   overtimeForm.value = {
     id: period.details?.id || null,
+    employeeId: employee.id, // Added for delete validation
     whatDone: period.details?.whatDone || '',
     date: extractDate(period.details?.startTime || period.details?.date),
     startTime: extractTime(period.details?.startTime),
@@ -2740,6 +2750,45 @@ const saveOvertime = async () => {
   } catch (error) {
     console.error('Ошибка при сохранении переработки:', error);
     overtimeError.value = 'Ошибка при сохранении переработки'
+  }
+}
+
+const deleteOvertimeItem = async () => {
+  if (!overtimeForm.value.id || !overtimeForm.value.employeeId) {
+    overtimeError.value = 'Невозможно удалить: отсутствует ID записи'
+    return
+  }
+
+  if (overtimeForm.value.employeeId !== currentUser.value?.ID) {
+    overtimeError.value = 'Можно удалять только свои переработки'
+    return
+  }
+
+  try {
+    // CRM delete
+    await new Promise((resolve, reject) => {
+      BX24.callMethod('crm.item.delete', {
+        entityTypeId: 1048,
+        id: overtimeForm.value.id
+      }, (result) => {
+        if (result.error()) {
+          reject(new Error(result.error()))
+        } else {
+          resolve(result)
+        }
+      })
+    })
+
+    // Refresh data
+    await loadData()
+
+    // Close dialog
+    overtimeDialog.value = false
+    alert('Переработка удалена успешно')
+    console.log('Deleted overtime:', overtimeForm.value.id)
+  } catch (error) {
+    console.error('Delete error:', error)
+    overtimeError.value = 'Ошибка удаления: ' + error.message
   }
 }
 
