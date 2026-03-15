@@ -353,7 +353,7 @@
                 class="status-chip"
               >
                 {{ getStatusText(getStatusForPeriod(employee, period)) }}
-                <span v-if="getHoursForPeriod(employee, period)" class="ml-1">
+                <span v-if="getHoursForPeriod(employee, period)" class="ml-1 font-weight-bold">
                   {{ getHoursForPeriod(employee, period) }}
                 </span>
               </v-chip>
@@ -1713,6 +1713,7 @@ const getStatusForPeriod = (employee, period) => {
 }
 
 const getHoursForPeriod = (employee, period) => {
+  // Year: sum overtime hours per month
   if (viewMode.value === 'year') {
     const monthSchedule = employee.schedule.filter(item => {
       const itemDate = moment(item.details?.date || `${currentDate.value.year()}-${period.key}-01`)
@@ -1737,28 +1738,42 @@ const getHoursForPeriod = (employee, period) => {
     return null
   }
   
-  const date = viewMode.value === 'week' ? moment(period.key).date() : period.key
-  const scheduleItem = employee.schedule.find(s => s.day === date)
-  return scheduleItem?.hours || null
+  // Day/Week: find by date/day, extract/calc hours for overtime
+  const scheduleItem = employee.schedule.find(s => {
+    if (viewMode.value === 'day') {
+      // Day mode: match by full date from details.date
+      return s.details?.date && moment(s.details.date).isSame(moment(period.key), 'day')
+    } else {
+      // Week mode: match by day of month
+      const dayNum = moment(period.key).date()
+      return s.day === dayNum
+    }
+  })
+  
+  if (scheduleItem?.status !== 'overtime') return null
+  
+  // Use pre-calculated or calc from details
+  if (scheduleItem.hours) return scheduleItem.hours
+  
+  // Fallback calc from start/end times
+  return calculateHours(scheduleItem.details?.startTime, scheduleItem.details?.endTime)
 }
 
 // Открытие диалога для периода
 const openPeriodDialog = (employee, period) => {
   if (viewMode.value === 'year') return
   
-  let day
-  if (viewMode.value === 'week') {
-    day = moment(period.key).date()
-  } else {
-    day = period.key
-  }
-  
   const mergedDay = {
-    startDay: day,
+    startDay: moment(period.key).date(),
     span: 1,
     status: getStatusForPeriod(employee, period),
     hours: getHoursForPeriod(employee, period),
-    details: employee.schedule.find(s => s.day === day)?.details
+    details: employee.schedule.find(s => {
+      if (viewMode.value === 'day') {
+        return s.details?.date && moment(s.details.date).isSame(moment(period.key), 'day')
+      }
+      return s.day === moment(period.key).date()
+    })?.details
   }
   
   openDateDialog(employee, mergedDay)
