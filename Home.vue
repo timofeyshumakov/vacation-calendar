@@ -180,10 +180,11 @@
     <div class="action-buttons mb-4">
       <v-btn 
         color="grey" 
-        prepend-icon="mdi-clock-plus"
+        :prepend-icon="isManager ? 'mdi-eye' : 'mdi-clock-plus'"
         @click="openOvertimeDialog"
+        :title="isManager ? 'Руководитель: просмотр переработок' : 'Добавить переработку'"
       >
-        Добавить переработку
+        {{ isManager ? 'Просмотр переработок' : 'Добавить переработку' }}
       </v-btn>
       <v-btn
         color="info"
@@ -194,16 +195,17 @@
       </v-btn>
       <v-btn
         color="orange"
-        prepend-icon="mdi-calendar-clock"
+        :prepend-icon="isManager ? 'mdi-account-multiple-plus' : 'mdi-calendar-clock'"
         @click="openDayoffDialog"
-        style="color: white !important"
+        :class="{ 'manager-btn': isManager }"
       >
         Добавить отгул
       </v-btn>
       <v-btn
         color="success"
-        prepend-icon="mdi-beach"
+        :prepend-icon="isManager ? 'mdi-account-multiple-plus' : 'mdi-beach'"
         @click="openVacationDialog"
+        :class="{ 'manager-btn': isManager }"
       >
         Добавить отпуск
       </v-btn>
@@ -298,7 +300,7 @@
                 'weekend-cell': isWeekend(day.date),
                 'current-day-cell': isCurrentDay(day.date)
               }"
-              @click="openYearDayDialog(employee, day)"
+@click="getStatusForYearDay(employee, day) && openYearDayDialog(employee, day)"
             >
               <v-chip
                 v-if="getStatusForYearDay(employee, day)"
@@ -342,7 +344,7 @@
               :key="period.key"
               class="schedule-cell"
               :class="{ 'clickable': getStatusForPeriod(employee, period) }"
-              @click="openPeriodDialog(employee, period)"
+              @click="getStatusForPeriod(employee, period) && openPeriodDialog(employee, period)"
             >
               <v-chip
                 v-if="getStatusForPeriod(employee, period)"
@@ -521,7 +523,14 @@
         </v-card-text>
         
         <v-card-actions>
-          <v-spacer></v-spacer>
+          <v-btn 
+            v-if="canDeletePeriod"
+            color="error" 
+            variant="text" 
+            @click="deletePeriod"
+          >
+            Удалить
+          </v-btn>
           <v-btn color="secondary" variant="text" @click="dateDialog = false">
             Отмена
           </v-btn>
@@ -533,6 +542,7 @@
             Обновить
           </v-btn>
         </v-card-actions>
+
       </v-card>
     </v-dialog>
 
@@ -606,15 +616,13 @@
                 readonly
                 rows="1"
               ></v-textarea>
-              <v-autocomplete
+              <v-textarea
                 v-model="overtimeForm.event"
-                :items="events"
-                item-title="title"
-                item-value="id"
                 label="6) Мероприятия"
                 variant="outlined"
                 required
-              ></v-autocomplete>
+                rows="1"
+              ></v-textarea>
             </v-col>
           </v-row>
 
@@ -623,7 +631,7 @@
               <v-textarea
                 v-model="overtimeForm.workType"
                 :items="workTypes"
-                label="6) Тип работ"
+                label="7) Тип работ"
                 variant="outlined"
                 rows="1"
                 required
@@ -635,7 +643,7 @@
             <v-col cols="12">
               <v-textarea
                 v-model="overtimeForm.justification"
-                label="7) Обоснование работы во вне рабочее время"
+                label="8) Обоснование работы во вне рабочее время"
                 variant="outlined"
                 rows="2"
                 required
@@ -745,6 +753,26 @@
         </v-card-title>
 
         <v-card-text class="pt-4">
+          <!-- Employee selector for manager -->
+          <v-row v-if="isManager">
+            <v-col cols="12">
+              <v-autocomplete
+                v-model="vacationForm.selectedEmployees"
+                :items="dialogEmployeeOptions"
+                item-title="name"
+                item-value="id"
+                label="Сотрудник отдела"
+                chips
+                clearable
+                variant="outlined"
+                prepend-inner-icon="mdi-account-multiple"
+                hint="Оставьте пустым для себя"
+                persistent-hint
+              >
+              </v-autocomplete>
+            </v-col>
+          </v-row>
+
           <v-row>
             <v-col cols="12" sm="6">
               <v-text-field
@@ -768,6 +796,18 @@
                 variant="outlined"
                 required
               ></v-text-field>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="12">
+              <v-textarea
+                v-model="vacationForm.additionalInfo"
+                label="Дополнительная информация"
+                variant="outlined"
+                rows="3"
+                placeholder="Комментарий, причина и т.д."
+              ></v-textarea>
             </v-col>
           </v-row>
 
@@ -796,6 +836,114 @@
       </v-card>
     </v-dialog>
 
+    <!-- Диалог просмотра переработки (для руководителя) -->
+    <v-dialog v-model="overtimeViewDialog" max-width="700px" persistent>
+      <v-card>
+        <v-card-title class="bg-info text-white d-flex align-center">
+          Просмотр переработки
+          <v-btn icon @click="overtimeViewDialog = false" class="ml-auto" color="white" variant="text">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        
+        <v-card-text class="pt-4">
+          <v-row>
+            <v-col cols="12">
+              <v-textarea
+                v-model="overtimeViewForm.whatDone"
+                label="1) Что сделано"
+                variant="outlined"
+                rows="3"
+                readonly
+              ></v-textarea>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="12">
+              <v-text-field
+                v-model="overtimeViewForm.date"
+                label="2) День"
+                type="date"
+                readonly
+                variant="outlined"
+              ></v-text-field>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="12" sm="6">
+              <v-text-field
+                v-model="overtimeViewForm.startTime"
+                label="3) Время начала работ"
+                readonly
+                variant="outlined"
+              ></v-text-field>
+            </v-col>
+            
+            <v-col cols="12" sm="6">
+              <v-text-field
+                v-model="overtimeViewForm.endTime"
+                label="4) Время завершения работ"
+                readonly
+                variant="outlined"
+              ></v-text-field>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="12">
+              <v-textarea
+                v-model="overtimeViewDuration"
+                label="5) Длительность"
+                variant="outlined"
+                readonly
+                rows="1"
+              ></v-textarea>
+              <v-textarea
+                v-model="overtimeViewForm.event"
+                label="6) Мероприятия"
+                variant="outlined"
+                readonly
+                rows="1"
+              ></v-textarea>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="12">
+              <v-textarea
+                v-model="overtimeViewForm.workType"
+                label="7) Тип работ"
+                variant="outlined"
+                readonly
+                rows="1"
+              ></v-textarea>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="12">
+              <v-textarea
+                v-model="overtimeViewForm.justification"
+                label="8) Обоснование работы во вне рабочее время"
+                variant="outlined"
+                readonly
+                rows="2"
+              ></v-textarea>
+            </v-col>
+          </v-row>
+        </v-card-text>
+        
+        <v-card-actions>
+          <v-spacer></v-spacer>
+          <v-btn color="secondary" @click="overtimeViewDialog = false">
+            Закрыть
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Диалог добавления отгула -->
     <v-dialog v-model="dayoffDialog" max-width="500px">
       <v-card>
@@ -807,6 +955,38 @@
         </v-card-title>
 
         <v-card-text class="pt-4">
+          <!-- Employee selector for manager -->
+          <v-row v-if="isManager">
+            <v-col cols="12">
+              <v-autocomplete
+                v-model="dayoffForm.selectedEmployees"
+                :items="dialogEmployeeOptions"
+                item-title="name"
+                item-value="id"
+                label="Сотрудники отдела (можно выбрать несколько)"
+                multiple
+                chips
+                clearable
+                variant="outlined"
+                prepend-inner-icon="mdi-account-multiple"
+                hint="Оставьте пустым для себя"
+                persistent-hint
+              >
+                <template v-slot:prepend-item>
+                  <v-list-item>
+                    <v-list-item-title>
+                      <v-checkbox
+                        label="Все в отделе"
+                        :model-value="dayoffForm.selectedEmployees.length === dialogEmployeeOptions.length"
+                        @click="toggleAllDialogEmployees('dayoff')"
+                      />
+                    </v-list-item-title>
+                  </v-list-item>
+                </template>
+              </v-autocomplete>
+            </v-col>
+          </v-row>
+
           <v-row>
             <v-col cols="12" sm="6">
               <v-text-field
@@ -830,6 +1010,18 @@
                 variant="outlined"
                 required
               ></v-text-field>
+            </v-col>
+          </v-row>
+
+          <v-row>
+            <v-col cols="12">
+              <v-textarea
+                v-model="dayoffForm.additionalInfo"
+                label="Дополнительная информация"
+                variant="outlined"
+                rows="3"
+                placeholder="Комментарий, причина и т.д."
+              ></v-textarea>
             </v-col>
           </v-row>
 
@@ -913,15 +1105,43 @@ const dateError = ref('')
 
 // Состояние для диалогов
 const overtimeDialog = ref(false)
+const overtimeViewDialog = ref(false)
 const remoteDialog = ref(false)
 const vacationDialog = ref(false)
 const dayoffDialog = ref(false)
 const overtimeError = ref('')
+const overtimeViewForm = ref({
+  id: null,
+  whatDone: '',
+  date: '',
+  startTime: '',
+  endTime: '',
+  event: '',
+  workType: '',
+  justification: ''
+})
 const remoteError = ref('')
 const vacationError = ref('')
 const dayoffError = ref('')
 
-// Форма для переработки
+// Форма для переработки (readonly copy for view)
+const overtimeViewDuration = computed(() => {
+  if (!overtimeViewForm.value.startTime || !overtimeViewForm.value.endTime) {
+    return 'Не указано'
+  }
+  const start = moment(overtimeViewForm.value.startTime, 'HH:mm')
+  const end = moment(overtimeViewForm.value.endTime, 'HH:mm')
+  if (!start.isValid() || !end.isValid()) return 'Некорректное время'
+  const duration = moment.duration(end.diff(start))
+  const hours = Math.floor(duration.asHours())
+  const minutes = duration.minutes()
+  let result = ''
+  if (hours > 0) result += `${hours} ч`
+  if (minutes > 0) { if (result) result += ' '; result += `${minutes} мин` }
+  return result || '0 минут'
+})
+
+// Форма для редактирования переработки
 const overtimeForm = ref({
   id: null, // ID элемента для редактирования
   whatDone: '',
@@ -941,13 +1161,32 @@ const remoteForm = ref({
 // Форма для отпуска
 const vacationForm = ref({
   startDate: null,
-  endDate: null
+  endDate: null,
+  additionalInfo: '',
+  selectedEmployees: []
 })
 
 // Форма для отгула
 const dayoffForm = ref({
   startDate: null,
-  endDate: null
+  endDate: null,
+  additionalInfo: '',
+  selectedEmployees: []
+})
+
+// Manager department IDs for validation
+const managerDepartments = computed(() => {
+  if (!currentUser.value) return []
+  const managerEmp = employees.value.find(emp => emp.id === currentUser.value.ID)
+  return managerEmp ? managerEmp.departmentIds : []
+})
+
+// Computed: dialog employee options (manager's depts only)
+const dialogEmployeeOptions = computed(() => {
+  if (!isManager.value) return []
+  return employees.value
+    .filter(emp => managerDepartments.value.some(dept => emp.departmentIds.includes(dept)))
+    .map(emp => ({ id: emp.id, name: emp.name }))
 })
 
 // Данные мероприятий из CRM
@@ -1007,6 +1246,19 @@ const isTableLoading = ref(false)
 
 // Текущий пользователь
 const currentUser = ref(null)
+
+// Manager detection - check position OR is department head (UF_HEAD)
+const isManager = computed(() => {
+  if (!currentUser.value) return false
+  
+  const hasManagerPosition = currentUser.value.workPosition?.toLowerCase().includes('руководитель')
+  if (hasManagerPosition) return true
+  
+  // Check if heads any department
+  const currentUserId = String(currentUser.value.ID)
+  return departments.value.some(dept => String(dept.UF_HEAD) === currentUserId)
+})
+
 
 // Переменная для поиска по сотруднику
 const searchEmployee = ref('')
@@ -1086,7 +1338,7 @@ async function loadData() {
       if (!status) return false;
 
       // Стадии, которые ДОЛЖНЫ быть у отпуска и отгула
-      const allowedStages = ["DT1048_108:UC_L1KEPV", "DT1048_108:UC_NQK5LN", "DT1048_108:SUCCESS"];
+      const allowedStages = ["DT1048_108:SUCCESS"];
 
       // Если это отпуск или отгул
       if (status === 'vacation' || status === 'dayoff') {
@@ -1161,7 +1413,7 @@ async function loadData() {
           details: {
             id: item.id,
             whatDone: item.ufCrm36_1772712553,
-            event: item.ufCrm36_1772712787,
+            event: item.ufCrm36_1773312024, //ufCrm36_1772712787
             workType: item.ufCrm36_1772712618,
             justification: item.ufCrm36_1772712662,
             startTime: item.ufCrm36_1772712459,
@@ -1247,16 +1499,35 @@ async function loadData() {
 
 // Функции для проверки прав на редактирование
 function canEditVacationOrDayoff(currentUserId, targetEmployeeId) {
-  // Только руководитель может редактировать отпуск и отгул
-  const currentUser = employees.value.find(emp => emp.id === currentUserId);
-  if (!currentUser) return false;
-
-  return currentUser.workPosition.toLowerCase().includes('руководитель');
+  // Self or manager editing department employee
+  if (currentUserId === targetEmployeeId) return true;
+  
+  const currentUserEmp = employees.value.find(emp => emp.id === currentUserId);
+  if (!currentUserEmp) return false;
+  
+  const targetEmp = employees.value.find(emp => emp.id === targetEmployeeId);
+  if (!targetEmp) return false;
+  
+  // Manager can edit if target in manager's departments
+  const managerDepts = managerDepartments.value;
+  return managerDepts.length > 0 && managerDepts.some(dept => targetEmp.departmentIds.includes(dept));
 }
 
-function canEditRemoteOrOvertime(currentUserId, targetEmployeeId) {
-  // Любой сотрудник может редактировать свою удаленку и переработку
-  return currentUserId === targetEmployeeId;
+function canEditRemoteOrOvertime(currentUserId, targetEmployeeId, status) {
+  const currentUserEmp = employees.value.find(emp => emp.id === currentUserId);
+  if (!currentUserEmp) return false;
+  
+  // Self always
+  if (currentUserId === targetEmployeeId) return true;
+  
+  // Managers: allow remote but BLOCK overtime
+  if (status === 'overtime') return false;
+  
+  const targetEmp = employees.value.find(emp => emp.id === targetEmployeeId);
+  if (!targetEmp) return false;
+  
+  const managerDepts = managerDepartments.value;
+  return managerDepts.length > 0 && managerDepts.some(dept => targetEmp.departmentIds.includes(dept));
 }
 
 // Вспомогательная функция для получения массива дней между датами
@@ -1890,24 +2161,17 @@ const getYearStatusText = (status) => {
 
 // Открытие диалога для дня в году
 const openYearDayDialog = (employee, day) => {
+  if (!getStatusForYearDay(employee, day)) return;
+  
   const mergedDay = {
     startDay: day.day,
     span: 1,
-    status: getStatusForYearDay(employee, day),
+    status,
     hours: employee.schedule.find(s => s.day === day.day && s.month === day.month)?.hours,
     details: employee.schedule.find(s => s.day === day.day && s.month === day.month)?.details
   }
   
-  if (mergedDay.status) {
-    openDateDialog(employee, mergedDay)
-  } else {
-    selectedEmployee.value = employee
-    startDate.value = day.date.format('YYYY-MM-DD')
-    endDate.value = day.date.format('YYYY-MM-DD')
-    selectedStatus.value = null
-    dateError.value = ''
-    dateDialog.value = true
-  }
+  openDateDialog(employee, mergedDay)
 }
 
 // Переработанные часы в будние
@@ -2117,21 +2381,26 @@ const openDateDialog = (employee, period) => {
   }
 
   // Проверяем права в зависимости от типа статуса
-  if (period.status === 'vacation' || period.status === 'dayoff') {
-    if (!canEditVacationOrDayoff(currentUserId, employee.id)) {
-      alert('Только руководитель может редактировать отпуск и отгул');
-      return;
+    if (period.status === 'vacation' || period.status === 'dayoff') {
+      if (!canEditVacationOrDayoff(currentUserId, employee.id)) {
+        alert('Только руководитель отдела может редактировать отпуск и отгул подчиненных');
+        return;
+      }
+    } else if (period.status === 'remote') {
+      if (!canEditRemoteOrOvertime(currentUserId, employee.id, period.status)) {
+        alert('Нет прав на редактирование чужой удаленки');
+        return;
+      }
+    } else if (period.status === 'overtime') {
+      if (!canEditRemoteOrOvertime(currentUserId, employee.id, period.status)) {
+        openOvertimeViewDialog(period.details)
+        return;
+      }
     }
-  } else if (period.status === 'remote' || period.status === 'overtime') {
-    if (!canEditRemoteOrOvertime(currentUserId, employee.id)) {
-      alert('Вы можете редактировать только свою удаленку и переработку');
-      return;
-    }
-  }
 
-  // Если это переработка, открываем диалог переработки с заполненными данными
+  // Если это переработка
   if (period.status === 'overtime') {
-    openOvertimeEditDialog(employee, period);
+    openOvertimeEditDialog(employee, period); // Handles manager block
     return;
   }
 
@@ -2149,123 +2418,143 @@ const openDateDialog = (employee, period) => {
 }
 
 // Функция обновления периода
-const updatePeriod = () => {
+const updatePeriod = async () => {
   if (isValidSelection.value && selectedEmployee.value && selectedPeriod.value) {
-    // Проверяем права на обновление
     const currentUserId = currentUser.value?.ID;
     if (!currentUserId) {
       alert('Не удалось определить текущего пользователя');
       return;
     }
 
-    // Проверяем права в зависимости от типа статуса
+    // Check permissions
     if (selectedPeriod.value.status === 'vacation' || selectedPeriod.value.status === 'dayoff') {
       if (!canEditVacationOrDayoff(currentUserId, selectedEmployee.value.id)) {
-        alert('Только руководитель может редактировать отпуск и отгул');
+        alert('Только руководитель отдела может редактировать отпуск и отгул подчиненных');
         return;
       }
     } else if (selectedPeriod.value.status === 'remote' || selectedPeriod.value.status === 'overtime') {
       if (!canEditRemoteOrOvertime(currentUserId, selectedEmployee.value.id)) {
-        alert('Вы можете редактировать только свою удаленку и переработку');
+        alert('Нет прав на редактирование чужой удаленки/переработки (только себя или руководитель отдела)');
         return;
       }
     }
-    // Сохраняем детали если это была переработка
-    const oldDetails = selectedPeriod.value.details
-    
-    // Очищаем старый период
-    for (let day = selectedPeriod.value.startDay; 
-         day < selectedPeriod.value.startDay + selectedPeriod.value.span; 
-         day++) {
-      const index = selectedEmployee.value.schedule.findIndex(s => s.day === day)
-      if (index !== -1) {
-        selectedEmployee.value.schedule.splice(index, 1)
+
+    try {
+      // For remote: update ufCrm36_1773132483885 array
+      if (selectedPeriod.value.status === 'remote' && selectedPeriod.value.details?.id) {
+        const newRemoteDates = []
+        const start = moment(startDate.value)
+        const end = moment(endDate.value)
+        
+        let current = start.clone()
+        while (current <= end) {
+          newRemoteDates.push(current.format('YYYY-MM-DD'))
+          current.add(1, 'day')
+        }
+        
+        BX24.callMethod('crm.item.update', {
+          id: selectedPeriod.value.details.id,
+          fields: { ufCrm36_1773132483885: newRemoteDates }
+        }, (result) => {
+          if (result.error()) console.error(result.error())
+          else console.log('Remote dates updated:', newRemoteDates)
+        })
       }
-    }
-    
-    // Добавляем новый период
-    const start = moment(startDate.value).date()
-    const end = moment(endDate.value).date()
-    
-    for (let day = start; day <= end; day++) {
-      const scheduleItem = {
-        day: day,
-        status: selectedStatus.value
+
+      // Local UI update (same as before)
+      const oldDetails = selectedPeriod.value.details
+      for (let day = selectedPeriod.value.startDay; day < selectedPeriod.value.startDay + selectedPeriod.value.span; day++) {
+        const index = selectedEmployee.value.schedule.findIndex(s => s.day === day)
+        if (index !== -1) selectedEmployee.value.schedule.splice(index, 1)
       }
       
-      // Добавляем время и детали для переработки
-      if (selectedStatus.value === 'overtime') {
-        if (overtimeHours.value) {
+      const startDay = moment(startDate.value).date()
+      const endDay = moment(endDate.value).date()
+      for (let day = startDay; day <= endDay; day++) {
+        const scheduleItem = { day, status: selectedStatus.value }
+        if (selectedStatus.value === 'overtime' && overtimeHours.value) {
           scheduleItem.hours = overtimeHours.value
         }
-        // Сохраняем старые детали если они были
-        if (oldDetails) {
-          scheduleItem.details = oldDetails
+        if (oldDetails) scheduleItem.details = oldDetails
+        
+        const existingIndex = selectedEmployee.value.schedule.findIndex(s => s.day === day)
+        if (existingIndex !== -1) {
+          selectedEmployee.value.schedule[existingIndex] = scheduleItem
+        } else {
+          selectedEmployee.value.schedule.push(scheduleItem)
         }
       }
       
-      // Проверяем, не существует ли уже запись для этого дня
-      const existingIndex = selectedEmployee.value.schedule.findIndex(s => s.day === day)
-      if (existingIndex !== -1) {
-        selectedEmployee.value.schedule[existingIndex] = scheduleItem
-      } else {
-        selectedEmployee.value.schedule.push(scheduleItem)
+      selectedEmployee.value.schedule.sort((a, b) => a.day - b.day)
+      if (selectedEmployeeForStats.value?.id === selectedEmployee.value.id) {
+        selectedEmployeeForStats.value = { ...selectedEmployee.value }
       }
+      
+      updateTrigger.value++
+      console.log('Период обновлен:', selectedStatus.value)
+    } catch (error) {
+      console.error('Ошибка обновления:', error)
     }
-    
-    // Сортируем расписание по дням
-    selectedEmployee.value.schedule.sort((a, b) => a.day - b.day)
-    
-    // Если обновляемый сотрудник - это выбранный для статистики, обновляем его
-    if (selectedEmployeeForStats.value && selectedEmployeeForStats.value.id === selectedEmployee.value.id) {
-      selectedEmployeeForStats.value = { ...selectedEmployee.value }
-    }
-    
-    // Принудительно обновляем таблицу
-    updateTrigger.value++
-    
-    console.log('Обновлен статус:', selectedStatus.value)
   }
   
   dateDialog.value = false
 }
 
-// Функция удаления периода
-const deletePeriod = () => {
+// Enhanced deletePeriod with CRM support
+const deletePeriod = (crmDelete = true) => {
   if (selectedEmployee.value && selectedPeriod.value) {
-    // Проверяем права на удаление
-    const currentUserId = currentUser.value?.ID;
+    const currentUserId = currentUser.value?.ID
     if (!currentUserId) {
-      alert('Не удалось определить текущего пользователя');
-      return;
+      alert('Не удалось определить текущего пользователя')
+      return
+    }
+    if (selectedPeriod.value.status === 'overtime' && !canEditRemoteOrOvertime(currentUserId, selectedEmployee.value.id, 'overtime')) {
+      alert('Руководитель не может удалять переработки')
+      return
+    }
+    if (crmDelete && selectedPeriod.value?.details?.id) {
+      // CRM delete + refresh
+      BX24.callMethod('crm.item.delete', {
+        entityTypeId: 1048,
+        id: selectedPeriod.value.details.id
+      }, (result) => {
+        if (result.error()) {
+          alert('Ошибка удаления из CRM: ' + result.error())
+          console.error(result.error())
+        } else {
+          console.log('CRM deleted:', selectedPeriod.value.details.id)
+        }
+      })
+      loadData()
+      dateDialog.value = false
+      return
+    }
+    
+    // Local-only delete (fallback)
+
+    const status = selectedPeriod.value.status
+    if (status === 'vacation' || status === 'dayoff') {
+      if (!canEditVacationOrDayoff(currentUserId, selectedEmployee.value.id)) {
+        alert('Только руководитель отдела может удалять отпуск/отгул')
+        return
+      }
+    } else if (status === 'overtime') {
+      if (!canEditRemoteOrOvertime(currentUserId, selectedEmployee.value.id)) {
+        alert('Нет прав на удаление переработки')
+        return
+      }
     }
 
-    // Проверяем права в зависимости от типа статуса
-    if (selectedPeriod.value.status === 'vacation' || selectedPeriod.value.status === 'dayoff') {
-      if (!canEditVacationOrDayoff(currentUserId, selectedEmployee.value.id)) {
-        alert('Только руководитель может удалять отпуск и отгул');
-        return;
-      }
-    } else if (selectedPeriod.value.status === 'remote' || selectedPeriod.value.status === 'overtime') {
-      if (!canEditRemoteOrOvertime(currentUserId, selectedEmployee.value.id)) {
-        alert('Вы можете удалять только свою удаленку и переработку');
-        return;
-      }
-    }
-    // Удаляем все дни выбранного периода
+    // Remove local schedule entries
     for (let day = selectedPeriod.value.startDay; 
          day < selectedPeriod.value.startDay + selectedPeriod.value.span; 
          day++) {
       const index = selectedEmployee.value.schedule.findIndex(s => s.day === day)
-      if (index !== -1) {
-        selectedEmployee.value.schedule.splice(index, 1)
-      }
+      if (index !== -1) selectedEmployee.value.schedule.splice(index, 1)
     }
     
-    // Принудительно обновляем таблицу
     updateTrigger.value++
-    
-    console.log('Удален период для:', selectedEmployee.value.name)
+    console.log('Local delete:', selectedEmployee.value.name)
   }
   
   dateDialog.value = false
@@ -2273,13 +2562,18 @@ const deletePeriod = () => {
 
 // Функции для диалога переработки
 const openOvertimeDialog = () => {
-  // Сброс формы с текущей датой и начальными значениями времени
+  if (isManager.value) {
+    // Managers: open full overtime stats view
+    selectedEmployeeForStats.value = null // Clear to show all
+    return
+  }
+  // Employees: normal add flow
   overtimeForm.value = {
     id: null,
     whatDone: '',
-    date: moment().format('YYYY-MM-DD'), // Автоматически заполняем текущей датой
-    startTime: '09:00', // Начальное время начала
-    endTime: '18:00',   // Начальное время окончания
+    date: moment().format('YYYY-MM-DD'),
+    startTime: '09:00',
+    endTime: '18:00',
     event: null,
     workType: null,
     justification: ''
@@ -2289,10 +2583,47 @@ const openOvertimeDialog = () => {
 }
 
 // Функция открытия диалога редактирования переработки
-const openOvertimeEditDialog = (employee, period) => {
-  console.log('Редактирование переработки:', period);
+const openOvertimeViewDialog = (details) => {
+  // Load data into readonly form
+  const extractTime = (dateTime) => {
+    if (!dateTime) return ''
+    const momentTime = moment(dateTime)
+    return momentTime.isValid() ? momentTime.format('HH:mm') : dateTime
+  }
 
-  // Извлекаем время из полного datetime в формате ISO "2026-03-05T12:12:00+03:00"
+  const extractDate = (dateTime) => {
+    if (!dateTime) return ''
+    const momentTime = moment(dateTime)
+    return momentTime.isValid() ? momentTime.format('YYYY-MM-DD') : dateTime
+  }
+
+  const findEventById = (eventId) => {
+    if (!eventId) return ''
+    const event = events.value.find(e => String(e.id) === String(eventId))
+    return event ? (event.title || event.name || event.NAME || `ID: ${eventId}`) : eventId
+  }
+  
+  overtimeViewForm.value = {
+    id: details?.id || null,
+    whatDone: details?.whatDone || '',
+    date: extractDate(details?.date || details?.startTime),
+    startTime: extractTime(details?.startTime),
+    endTime: extractTime(details?.endTime),
+    event: findEventById(details?.event),
+    workType: details?.workType || '',
+    justification: details?.justification || ''
+  }
+  overtimeViewDialog.value = true
+}
+
+const openOvertimeEditDialog = (employee, period) => {
+  const currentUserId = currentUser.value?.ID
+  if (isManager.value || !canEditRemoteOrOvertime(currentUserId, employee.id, 'overtime')) {
+    openOvertimeViewDialog(period.details)
+    return
+  }
+  // Normal edit flow for self
+  console.log('Редактирование переработки:', period);
   const extractTime = (dateTime) => {
     if (!dateTime) return ''
     const momentTime = moment(dateTime)
@@ -2302,14 +2633,11 @@ const openOvertimeEditDialog = (employee, period) => {
   const extractDate = (dateTime) => {
     if (!dateTime) return moment(currentDate.value).date(period.startDay).format('YYYY-MM-DD')
     
-    // Если это ISO строка с датой
     const momentTime = moment(dateTime)
     if (momentTime.isValid()) {
-      // Возвращаем только дату в формате YYYY-MM-DD для поля type="date"
       return momentTime.format('YYYY-MM-DD')
     }
     
-    // Если это просто число (день месяца)
     if (typeof dateTime === 'number' || !isNaN(parseInt(dateTime))) {
       return moment(currentDate.value).date(parseInt(dateTime)).format('YYYY-MM-DD')
     }
@@ -2317,41 +2645,38 @@ const openOvertimeEditDialog = (employee, period) => {
     return dateTime
   }
 
-  // Находим мероприятие по ID для корректного отображения
   const findEventById = (eventId) => {
     if (!eventId) return null
     return events.value.find(event => event.id == eventId) || null
   }
   
-  console.log('Найденное мероприятие:', findEventById(period.details?.event));
-  
-  // Заполняем форму данными из периода
   overtimeForm.value = {
     id: period.details?.id || null,
     whatDone: period.details?.whatDone || '',
     date: extractDate(period.details?.startTime || period.details?.date),
     startTime: extractTime(period.details?.startTime),
     endTime: extractTime(period.details?.endTime),
-    event: findEventById(period.details?.event) || null, // Объект мероприятия для отображения
+    event: findEventById(period.details?.event) || null,
     workType: period.details?.workType || null,
     justification: period.details?.justification || ''
   }
   
-  console.log('Заполненная форма:', overtimeForm.value);
   overtimeError.value = ''
   overtimeDialog.value = true
 }
 
 const saveOvertime = async () => {
-  if (!isOvertimeValid.value) {
-    overtimeError.value = 'Заполните все обязательные поля'
-    return
-  }
-
-  // Получаем ID текущего пользователя
   const currentUserId = currentUser.value?.ID;
   if (!currentUserId) {
     overtimeError.value = 'Не удалось определить текущего пользователя'
+    return
+  }
+  if (isManager.value || !canEditRemoteOrOvertime(currentUserId, currentUserId, 'overtime')) {
+    overtimeError.value = 'Руководитель не может редактировать переработки'
+    return
+  }
+  if (!isOvertimeValid.value) {
+    overtimeError.value = 'Заполните все обязательные поля'
     return
   }
 
@@ -2366,7 +2691,8 @@ const saveOvertime = async () => {
       ufCrm36_1737068421810: overtimeForm.value.date, // День
       ufCrm36_1772712459: startDateTime, // Время начала работ (полный datetime)
       ufCrm36_1772712490: endDateTime, // Время завершения работ (полный datetime)
-      ufCrm36_1772712787: overtimeForm.value.event?.id || overtimeForm.value.event, // Мероприятие (ID)
+      //ufCrm36_1772712787: overtimeForm.value.event?.id || overtimeForm.value.event, // Мероприятие (ID)
+      ufCrm36_1773312024: overtimeForm.value.event || '',
       ufCrm36_1772712618: overtimeForm.value.workType, // Тип работ
       ufCrm36_1772712662: overtimeForm.value.justification // Обоснование
     };
@@ -2428,11 +2754,26 @@ const openRemoteDialog = () => {
 }
 
 // Функции для диалога отпуска
+const toggleAllDialogEmployees = (formType) => {
+  const form = formType === 'vacation' ? vacationForm.value : dayoffForm.value
+  const options = dialogEmployeeOptions.value
+  if (form.selectedEmployees.length === options.length) {
+    form.selectedEmployees = []
+  } else {
+    form.selectedEmployees = options.map(opt => opt.id)
+  }
+}
+
 const openVacationDialog = () => {
-  // Сброс формы
+  // Сброс формы, prefill from filters if manager
+  const currentUserId = currentUser.value?.ID
   vacationForm.value = {
     startDate: null,
-    endDate: null
+    endDate: null,
+    additionalInfo: '',
+    selectedEmployees: isManager.value && filters.value.selected.employees.length > 0 
+      ? filters.value.selected.employees.filter(id => dialogEmployeeOptions.value.some(opt => opt.id === id))
+      : []
   }
   vacationError.value = ''
   vacationDialog.value = true
@@ -2440,10 +2781,15 @@ const openVacationDialog = () => {
 
 // Функции для диалога отгула
 const openDayoffDialog = () => {
-  // Сброс формы
+  // Сброс формы, prefill from filters if manager
+  const currentUserId = currentUser.value?.ID
   dayoffForm.value = {
     startDate: null,
-    endDate: null
+    endDate: null,
+    additionalInfo: '',
+    selectedEmployees: isManager.value && filters.value.selected.employees.length > 0 
+      ? filters.value.selected.employees.filter(id => dialogEmployeeOptions.value.some(opt => opt.id === id))
+      : []
   }
   dayoffError.value = ''
   dayoffDialog.value = true
@@ -2506,7 +2852,6 @@ const saveVacation = async () => {
     return
   }
 
-  // Получаем ID текущего пользователя
   const currentUserId = currentUser.value?.ID;
   if (!currentUserId) {
     vacationError.value = 'Не удалось определить текущего пользователя'
@@ -2514,38 +2859,36 @@ const saveVacation = async () => {
   }
 
   try {
-    // Создаем полные datetime значения из дат
     const startDateTime = moment(vacationForm.value.startDate + ' 00:00', 'YYYY-MM-DD HH:mm').format();
     const endDateTime = moment(vacationForm.value.endDate + ' 23:59', 'YYYY-MM-DD HH:mm').format();
-
-    const vacationData = {
-      assignedById: currentUserId,
+    const commonData = {
       ufCrm36_1737068344170: 10372, // Тип: отпуск
-      ufCrm36_1737068421810: startDateTime, // Дата начала
-      ufCrm36_1737068451414: endDateTime // Дата окончания
-    };
+      ufCrm36_1737068421810: startDateTime,
+      ufCrm36_1737068451414: endDateTime,
+      ufCrm36_1737068503448: vacationForm.value.additionalInfo || '',
+      categoryId: 108,
+      stageId: 'DT1048_108:SUCCESS'
+    }
 
-    BX24.callMethod(
+      const empData = { ...commonData, ASSIGNED_BY_ID: vacationForm.value.selectedEmployees ?? currentUserId }
+      BX24.callMethod(
         'crm.item.add',
         {
-            entityTypeId: 1048,
-            fields: vacationData
+          entityTypeId: 1048,
+          fields: empData
         },
         (result) => {
-            result.error()
-                ? console.error(result.error())
-                : console.info(result.data())
-            ;
+          if (result.error()) {
+            console.error('Error creating vacation:', result.error())
+          } else {
+            console.info('Vacation created:', result.data())
+          }
         }
-    );
-
-    // Перезагружаем данные после успешного сохранения
-    await loadData();
-
+      )
+    await loadData()
     vacationDialog.value = false
-    console.log('Добавлен отпуск в CRM:', vacationForm.value)
   } catch (error) {
-    console.error('Ошибка при сохранении отпуска:', error);
+    console.error('Error saving vacation:', error)
     vacationError.value = 'Ошибка при сохранении отпуска'
   }
 }
@@ -2557,7 +2900,6 @@ const saveDayoff = async () => {
     return
   }
 
-  // Получаем ID текущего пользователя
   const currentUserId = currentUser.value?.ID;
   if (!currentUserId) {
     dayoffError.value = 'Не удалось определить текущего пользователя'
@@ -2565,38 +2907,58 @@ const saveDayoff = async () => {
   }
 
   try {
-    // Создаем полные datetime значения из дат
     const startDateTime = moment(dayoffForm.value.startDate + ' 00:00', 'YYYY-MM-DD HH:mm').format();
     const endDateTime = moment(dayoffForm.value.endDate + ' 23:59', 'YYYY-MM-DD HH:mm').format();
-
-    const dayoffData = {
-      assignedById: currentUserId,
+    const commonData = {
       ufCrm36_1737068344170: 10374, // Тип: отгул
-      ufCrm36_1737068421810: startDateTime, // Дата начала
-      ufCrm36_1737068451414: endDateTime // Дата окончания
-    };
+      ufCrm36_1737068421810: startDateTime,
+      ufCrm36_1737068451414: endDateTime,
+      ufCrm36_1737068503448: dayoffForm.value.additionalInfo || '',
+      categoryId: 108,
+      stageId: 'DT1048_108:SUCCESS'
+    }
 
-    BX24.callMethod(
+    // Determine target employee IDs
+    let targetEmployeeIds
+    if (isManager.value && dayoffForm.value.selectedEmployees.length > 0) {
+      // Validate all selected are in manager's departments
+      const invalidEmps = dayoffForm.value.selectedEmployees.filter(id => 
+        !dialogEmployeeOptions.value.some(opt => opt.id === id)
+      )
+      if (invalidEmps.length > 0) {
+        dayoffError.value = 'Некоторые сотрудники не из вашего отдела'
+        return
+      }
+      targetEmployeeIds = dayoffForm.value.selectedEmployees
+      console.log(`Creating dayoff for ${targetEmployeeIds.length} employees`)
+    } else {
+      targetEmployeeIds = [currentUserId]
+    }
+
+    // Create one CRM item per employee
+    for (const empId of targetEmployeeIds) {
+      const empData = { ...commonData, assignedById: empId }
+      BX24.callMethod(
         'crm.item.add',
         {
-            entityTypeId: 1048,
-            fields: dayoffData
+          entityTypeId: 1048,
+          fields: empData
         },
         (result) => {
-            result.error()
-                ? console.error(result.error())
-                : console.info(result.data())
-            ;
+          if (result.error()) {
+            console.error('Error creating dayoff:', result.error())
+          } else {
+            console.info('Dayoff created:', result.data())
+          }
         }
-    );
+      )
+    }
 
-    // Перезагружаем данные после успешного сохранения
-    await loadData();
-
+    await loadData()
     dayoffDialog.value = false
-    console.log('Добавлен отгул в CRM:', dayoffForm.value)
+    console.log('Dayoff(s) saved for:', targetEmployeeIds)
   } catch (error) {
-    console.error('Ошибка при сохранении отгула:', error);
+    console.error('Error saving dayoff:', error)
     dayoffError.value = 'Ошибка при сохранении отгула'
   }
 }
@@ -2609,6 +2971,20 @@ const isVacationValid = computed(() => {
 const isDayoffValid = computed(() => {
   return dayoffForm.value.startDate && dayoffForm.value.endDate
 })
+
+// Permissions for delete (vacation, dayoff, overtime)
+const canDeletePeriod = computed(() => {
+  if (!selectedPeriod.value?.details?.id) return false
+  const status = selectedPeriod.value.status
+  if (status === 'vacation' || status === 'dayoff') {
+    return canEditVacationOrDayoff(currentUser.value?.ID, selectedEmployee.value?.id)
+  }
+  if (status === 'overtime' || status === 'remote') {
+    return canEditRemoteOrOvertime(currentUser.value?.ID, selectedEmployee.value?.id)
+  }
+  return false
+})
+
 
 const selectedEmployeeForStats = ref(null)
 
@@ -2893,6 +3269,18 @@ watch(
   gap: 1rem
   justify-content: flex-start
   flex-wrap: wrap
+
+.manager-btn
+  animation: pulse 2s infinite
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2)
+
+@keyframes pulse
+  0%
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2)
+  50%
+    box-shadow: 0 4px 16px rgba(255,193,7,0.4)
+  100%
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2)
 
 .schedule-table
   border: 1px solid #ddd
