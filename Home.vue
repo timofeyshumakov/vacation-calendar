@@ -1243,21 +1243,37 @@ const headedDepartmentIds = computed(() => {
     .filter(Boolean)
 })
 
+/** Полный доступ ко всем сотрудникам/элементам (обход ограничений по отделам). */
+const SUPER_USER_ID = '1612'
+function isSuperUser(userId) {
+  if (userId == null || userId === '') return false
+  return String(userId) === SUPER_USER_ID
+}
+
 // Manager department IDs: профиль + отделы руководства + все дочерние (PARENT)
 const managerDepartments = computed(() => {
   if (!currentUser.value) return []
-  const managerEmp = employees.value.find((emp) => emp.id === currentUser.value.ID)
+  const managerEmp = employees.value.find(
+    (emp) => String(emp.id) === String(currentUser.value.ID)
+  )
   const fromProfile = managerEmp ? managerEmp.departmentIds.map(stringifyDeptId).filter(Boolean) : []
   const seeds = [...new Set([...fromProfile, ...headedDepartmentIds.value])]
   return expandDepartmentsWithChildren(seeds, departments.value)
 })
 
-// Computed: dialog employee options (manager's depts only)
+// Computed: dialog employee options (manager's depts only; суперпользователь — все)
 const dialogEmployeeOptions = computed(() => {
   if (!isManager.value) return []
+  if (isSuperUser(currentUser.value?.ID)) {
+    return employees.value.map((emp) => ({ id: emp.id, name: emp.name }))
+  }
   return employees.value
-    .filter(emp => managerDepartments.value.some(dept => emp.departmentIds.includes(dept)))
-    .map(emp => ({ id: emp.id, name: emp.name }))
+    .filter((emp) =>
+      managerDepartments.value.some((dept) =>
+        emp.departmentIds.some((did) => String(did) === String(dept))
+      )
+    )
+    .map((emp) => ({ id: emp.id, name: emp.name }))
 })
 
 // Данные мероприятий из CRM
@@ -1578,6 +1594,7 @@ async function loadData() {
 function canEditVacationOrDayoff(currentUserId, targetEmployeeId) {
   // Self or manager editing department employee
   if (String(currentUserId) === String(targetEmployeeId)) return true;
+  if (isSuperUser(currentUserId)) return true;
 
   const currentUserEmp = employees.value.find(
     (emp) => String(emp.id) === String(currentUserId)
@@ -1602,7 +1619,8 @@ function canEditRemoteOrOvertime(currentUserId, targetEmployeeId, status) {
 
   // Self always (в т.ч. руководитель добавляет переработку себе)
   if (String(currentUserId) === String(targetEmployeeId)) return true;
-  
+  if (isSuperUser(currentUserId)) return true;
+
   // Managers: allow remote but BLOCK overtime
   if (status === 'overtime') return false;
   
