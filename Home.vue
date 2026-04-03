@@ -182,9 +182,8 @@
         color="grey" 
         :prepend-icon="isManager ? 'mdi-eye' : 'mdi-clock-plus'"
         @click="openOvertimeDialog"
-        :title="isManager ? 'Руководитель: просмотр переработок' : 'Добавить переработку'"
       >
-        {{ isManager ? 'Просмотр переработок' : 'Добавить переработку' }}
+        Добавить переработку
       </v-btn>
       <v-btn
         color="info"
@@ -290,25 +289,26 @@
           </td>
           
           <template v-if="viewMode === 'year'">
-            <!-- Отображение для года - все дни подряд -->
+            <!-- Год: объединение подряд идущих дней с тем же статусом и часами (как в месяце) -->
             <td 
-              v-for="day in yearDays"
-              :key="'cell-' + employee.id + '-' + day.key"
+              v-for="(merged, yidx) in getMergedYearDays(employee)"
+              :key="'ycell-' + employee.id + '-' + yidx"
+              :colspan="merged.span"
               class="schedule-cell year-cell"
               :class="{ 
-                'clickable': getStatusForYearDay(employee, day),
-                'weekend-cell': isWeekend(day.date),
-                'current-day-cell': isCurrentDay(day.date)
+                'clickable': merged.status,
+                'weekend-cell': merged.span === 1 && isWeekend(merged.yearDay.date),
+                'current-day-cell': merged.span === 1 && isCurrentDay(merged.yearDay.date)
               }"
-@click="getStatusForYearDay(employee, day) && openYearDayDialog(employee, day)"
+              @click="merged.status && openYearMergedDialog(employee, merged)"
             >
               <v-chip
-                v-if="getStatusForYearDay(employee, day)"
-                :color="getStatusColor(getStatusForYearDay(employee, day))"
+                v-if="merged.status"
+                :color="getStatusColor(merged.status)"
                 size="x-small"
                 class="status-chip year-chip"
               >
-                {{ getYearStatusText(getStatusForYearDay(employee, day)) }}
+                {{ getYearStatusText(merged.status) }}
               </v-chip>
               <span v-else class="empty-cell">—</span>
             </td>
@@ -337,8 +337,30 @@
             </td>
           </template>
           
+          <template v-else-if="viewMode === 'week'">
+            <!-- Неделя: объединение слотов как в месяце -->
+            <td 
+              v-for="(merged, widx) in getMergedWeekPeriods(employee)" 
+              :key="'w-' + employee.id + '-' + widx"
+              :colspan="merged.span"
+              class="schedule-cell"
+              :class="{ 'clickable': merged.status }"
+              @click="merged.status && openDateDialog(employee, merged)"
+            >
+              <v-chip
+                v-if="merged.status"
+                :color="getStatusColor(merged.status)"
+                size="small"
+                class="status-chip"
+              >
+                {{ getStatusText(merged.status) }}
+                <span v-if="merged.hours" class="ml-1">{{ merged.hours }}</span>
+              </v-chip>
+              <span v-else class="empty-cell">—</span>
+            </td>
+          </template>
           <template v-else>
-            <!-- Отображение для дня/недели/года -->
+            <!-- День -->
             <td 
               v-for="period in periods" 
               :key="period.key"
@@ -362,7 +384,7 @@
           </template>
         </tr>
         <tr v-if="filteredEmployees.length === 0">
-          <td :colspan="periods.length + 2" class="text-center pa-4">
+          <td :colspan="totalColumns" class="text-center pa-4">
             <v-icon icon="mdi-alert" size="large" color="warning" class="mb-2"></v-icon>
             <p>Нет сотрудников, соответствующих выбранным фильтрам</p>
           </td>
@@ -1183,11 +1205,51 @@ const dayoffForm = ref({
   selectedEmployees: []
 })
 
-// Manager department IDs for validation
+function stringifyDeptId(id) {
+  if (id == null || id === '') return ''
+  return String(id)
+}
+
+/** Отделы из `rootIds` и все дочерние по цепочке PARENT (department.get). */
+function expandDepartmentsWithChildren(rootIds, deptList) {
+  const managed = new Set(
+    rootIds.map(stringifyDeptId).filter((id) => id && id !== '0')
+  )
+  if (managed.size === 0) return []
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const dept of deptList) {
+      const id = stringifyDeptId(dept.ID)
+      if (!id || managed.has(id)) continue
+      const parent = stringifyDeptId(dept.PARENT)
+      if (!parent || parent === '0') continue
+      if (managed.has(parent)) {
+        managed.add(id)
+        changed = true
+      }
+    }
+  }
+  return Array.from(managed)
+}
+
+/** Отделы, где текущий пользователь указан как UF_HEAD (руководитель отдела). */
+const headedDepartmentIds = computed(() => {
+  if (!currentUser.value || !departments.value.length) return []
+  const uid = stringifyDeptId(currentUser.value.ID)
+  return departments.value
+    .filter((d) => stringifyDeptId(d.UF_HEAD) === uid)
+    .map((d) => stringifyDeptId(d.ID))
+    .filter(Boolean)
+})
+
+// Manager department IDs: профиль + отделы руководства + все дочерние (PARENT)
 const managerDepartments = computed(() => {
   if (!currentUser.value) return []
-  const managerEmp = employees.value.find(emp => emp.id === currentUser.value.ID)
-  return managerEmp ? managerEmp.departmentIds : []
+  const managerEmp = employees.value.find((emp) => emp.id === currentUser.value.ID)
+  const fromProfile = managerEmp ? managerEmp.departmentIds.map(stringifyDeptId).filter(Boolean) : []
+  const seeds = [...new Set([...fromProfile, ...headedDepartmentIds.value])]
+  return expandDepartmentsWithChildren(seeds, departments.value)
 })
 
 // Computed: dialog employee options (manager's depts only)
@@ -1265,7 +1327,8 @@ const isManager = computed(() => {
   
   // Check if heads any department
   const currentUserId = String(currentUser.value.ID)
-  return departments.value.some(dept => String(dept.UF_HEAD) === currentUserId)
+  console.log(departments.value.some(dept => String(dept.UF_HEAD) == currentUserId));
+  return departments.value.some(dept => String(dept.UF_HEAD) == currentUserId)
 })
 
 
@@ -1392,10 +1455,10 @@ async function loadData() {
         slots.push(currentSlot);
         
         // Создаем отдельные записи для каждого слота
-        return slots.map(slotDates => {
+        return slots.map((slotDates) => {
           const startDate = moment(slotDates[0]);
           const endDate = moment(slotDates[slotDates.length - 1]);
-          
+
           return {
             employeeId: String(item.assignedById),
             status: status,
@@ -1404,15 +1467,20 @@ async function loadData() {
             days: getDaysArray(startDate, endDate),
             details: {
               id: item.id,
-              remoteDates: slotDates // Массив дат этого слота
+              remoteDates: slotDates, // даты только этого слота (подряд)
+              allRemoteDates: sortedDates // полный массив CRM — для частичного удаления слота
             }
           };
         });
       } else {
         // Старый формат или другие статусы: даты в полях ufCrm36_1737068421810 и ufCrm36_1737068451414
         const startDate = moment(item.ufCrm36_1737068421810);
-        const endDate = moment(item.ufCrm36_1737068451414);
-        
+        let endDate = moment(item.ufCrm36_1737068451414);
+        // Конец периода часто не заполняют (переработка за один день) — иначе moment(null) невалиден и days = []
+        if (!item.ufCrm36_1737068451414 || !endDate.isValid()) {
+          endDate = startDate.clone();
+        }
+
         return {
           employeeId: String(item.assignedById),
           status: status,
@@ -1427,7 +1495,8 @@ async function loadData() {
             justification: item.ufCrm36_1772712662,
             startTime: item.ufCrm36_1772712459,
             endTime: item.ufCrm36_1772712490,
-            date: item.ufCrm36_1737068421810
+            date: item.ufCrm36_1737068421810,
+            additionalInfo: item.ufCrm36_1737068503448 || ''
           }
         };
       }
@@ -1435,15 +1504,14 @@ async function loadData() {
 
     // Этап 4: Загрузка графика (80%)
     loadingProgress.value = 80;
-    // Фильтруем график по текущему месяцу
-    const currentMonthStart = moment(currentDate.value).startOf('month');
-    const currentMonthEnd = moment(currentDate.value).endOf('month');
+    // Весь год выбранной даты: и месячный/недельный вид берут нужный период из schedule, годовой — все месяцы
+    const rangeStart = moment(currentDate.value).startOf('year');
+    const rangeEnd = moment(currentDate.value).endOf('year');
 
     const filteredSchedule = schedule.value.filter(scheduleItem => {
       const scheduleStart = moment(scheduleItem.startDate);
       const scheduleEnd = moment(scheduleItem.endDate);
-      // Проверяем, пересекается ли график с текущим месяцем
-      return scheduleStart.isSameOrBefore(currentMonthEnd) && scheduleEnd.isSameOrAfter(currentMonthStart);
+      return scheduleStart.isSameOrBefore(rangeEnd) && scheduleEnd.isSameOrAfter(rangeStart);
     });
 
     // Объединяем отфильтрованный график с сотрудниками
@@ -1456,12 +1524,12 @@ async function loadData() {
             const dayOfMonth = day.date();
             const monthOfYear = day.month() + 1; // месяцы в moment начинаются с 0
             const yearOfSchedule = day.year();
-            // Проверяем, что день относится к текущему году
-            if (yearOfSchedule === currentYear.value) {
+            // Проверяем, что день относится к выбранному году в календаре
+            if (Number(yearOfSchedule) === Number(currentYear.value)) {
               employeeSchedule.push({
-                day: dayOfMonth,
-                month: monthOfYear,
-                year: yearOfSchedule,
+                day: Number(dayOfMonth),
+                month: Number(monthOfYear),
+                year: Number(yearOfSchedule),
                 status: scheduleItem.status,
                 hours: scheduleItem.status === 'overtime' ? calculateHours(scheduleItem.details.startTime, scheduleItem.details.endTime) : null,
                 details: scheduleItem.details
@@ -1473,7 +1541,7 @@ async function loadData() {
 
       return {
         ...employee,
-        schedule: employeeSchedule.sort((a, b) => a.day - b.day)
+        schedule: employeeSchedule.sort((a, b) => a.month - b.month || a.day - b.day)
       };
     });
 
@@ -1509,12 +1577,16 @@ async function loadData() {
 // Функции для проверки прав на редактирование
 function canEditVacationOrDayoff(currentUserId, targetEmployeeId) {
   // Self or manager editing department employee
-  if (currentUserId === targetEmployeeId) return true;
-  
-  const currentUserEmp = employees.value.find(emp => emp.id === currentUserId);
+  if (String(currentUserId) === String(targetEmployeeId)) return true;
+
+  const currentUserEmp = employees.value.find(
+    (emp) => String(emp.id) === String(currentUserId)
+  );
   if (!currentUserEmp) return false;
-  
-  const targetEmp = employees.value.find(emp => emp.id === targetEmployeeId);
+
+  const targetEmp = employees.value.find(
+    (emp) => String(emp.id) === String(targetEmployeeId)
+  );
   if (!targetEmp) return false;
   
   // Manager can edit if target in manager's departments
@@ -1523,18 +1595,22 @@ function canEditVacationOrDayoff(currentUserId, targetEmployeeId) {
 }
 
 function canEditRemoteOrOvertime(currentUserId, targetEmployeeId, status) {
-  const currentUserEmp = employees.value.find(emp => emp.id === currentUserId);
+  const currentUserEmp = employees.value.find(
+    (emp) => String(emp.id) === String(currentUserId)
+  );
   if (!currentUserEmp) return false;
-  
-  // Self always
-  if (currentUserId === targetEmployeeId) return true;
+
+  // Self always (в т.ч. руководитель добавляет переработку себе)
+  if (String(currentUserId) === String(targetEmployeeId)) return true;
   
   // Managers: allow remote but BLOCK overtime
   if (status === 'overtime') return false;
   
-  const targetEmp = employees.value.find(emp => emp.id === targetEmployeeId);
+  const targetEmp = employees.value.find(
+    (emp) => String(emp.id) === String(targetEmployeeId)
+  );
   if (!targetEmp) return false;
-  
+
   const managerDepts = managerDepartments.value;
   return managerDepts.length > 0 && managerDepts.some(dept => targetEmp.departmentIds.includes(dept));
 }
@@ -1551,6 +1627,19 @@ function getDaysArray(startDate, endDate) {
   }
   
   return days;
+}
+
+/** Число из полей CRM/JSON (строка и число сравниваем одинаково). */
+function num(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : NaN
+}
+
+/** Подряд идущие дни с одинаковым статусом склеиваются, кроме переработки (1 запись CRM = 1 ячейка). */
+function canMergeAdjacentStatus(status, hours, prevStatus, prevHours) {
+  if (status !== prevStatus || hours !== prevHours) return false
+  if (status === 'overtime') return false
+  return true
 }
 
 // Вспомогательная функция для расчета часов переработки
@@ -1667,8 +1756,8 @@ const prevPeriod = () => {
       currentDate.value = moment(currentDate.value).subtract(1, 'year')
       break
   }
-  // Перезагружаем данные при смене месяца
-  if (viewMode.value === 'month') {
+  // Перезагружаем данные при смене месяца или года (годовой вид — полный год в schedule)
+  if (viewMode.value === 'month' || viewMode.value === 'year') {
     loadData();
   }
 }
@@ -1688,8 +1777,8 @@ const nextPeriod = () => {
       currentDate.value = moment(currentDate.value).add(1, 'year')
       break
   }
-  // Перезагружаем данные при смене месяца
-  if (viewMode.value === 'month') {
+  // Перезагружаем данные при смене месяца или года (годовой вид — полный год в schedule)
+  if (viewMode.value === 'month' || viewMode.value === 'year') {
     loadData();
   }
 }
@@ -1702,14 +1791,17 @@ const goToCurrentWeek = () => {
 const getStatusForPeriod = (employee, period) => {
   if (viewMode.value === 'year') return null
   if (viewMode.value === 'month') return null
-  
-  let date
-  if (viewMode.value === 'day' || viewMode.value === 'week') {
-    date = moment(period.key).date()
+
+  if (viewMode.value === 'day') {
+    const scheduleItem = employee.schedule.find(
+      (s) => s.details?.date && moment(s.details.date).isSame(moment(period.key), 'day')
+    )
+    return scheduleItem?.status || null
   }
-  
-  const scheduleItem = employee.schedule.find(s => s.day === date)
-  return scheduleItem?.status || null
+  if (viewMode.value === 'week') {
+    return scheduleItemForCalendarDate(employee, moment(period.key))?.status || null
+  }
+  return null
 }
 
 const getHoursForPeriod = (employee, period) => {
@@ -1738,17 +1830,13 @@ const getHoursForPeriod = (employee, period) => {
     return null
   }
   
-  // Day/Week: find by date/day, extract/calc hours for overtime
-  const scheduleItem = employee.schedule.find(s => {
-    if (viewMode.value === 'day') {
-      // Day mode: match by full date from details.date
-      return s.details?.date && moment(s.details.date).isSame(moment(period.key), 'day')
-    } else {
-      // Week mode: match by day of month
-      const dayNum = moment(period.key).date()
-      return s.day === dayNum
-    }
-  })
+  // Day/Week: find by calendar date, extract/calc hours for overtime
+  const scheduleItem =
+    viewMode.value === 'day'
+      ? employee.schedule.find(
+          (s) => s.details?.date && moment(s.details.date).isSame(moment(period.key), 'day')
+        )
+      : scheduleItemForCalendarDate(employee, moment(period.key))
   
   if (scheduleItem?.status !== 'overtime') return null
   
@@ -1763,17 +1851,20 @@ const getHoursForPeriod = (employee, period) => {
 const openPeriodDialog = (employee, period) => {
   if (viewMode.value === 'year') return
   
+  const pm = moment(period.key)
   const mergedDay = {
-    startDay: moment(period.key).date(),
+    startDay: pm.date(),
     span: 1,
     status: getStatusForPeriod(employee, period),
     hours: getHoursForPeriod(employee, period),
-    details: employee.schedule.find(s => {
-      if (viewMode.value === 'day') {
-        return s.details?.date && moment(s.details.date).isSame(moment(period.key), 'day')
-      }
-      return s.day === moment(period.key).date()
-    })?.details
+    details:
+      viewMode.value === 'day'
+        ? employee.schedule.find(
+            (s) => s.details?.date && moment(s.details.date).isSame(pm, 'day')
+          )?.details
+        : scheduleItemForCalendarDate(employee, pm)?.details,
+    dateStart: pm.format('YYYY-MM-DD'),
+    dateEnd: pm.format('YYYY-MM-DD')
   }
   
   openDateDialog(employee, mergedDay)
@@ -1808,69 +1899,102 @@ const getMonthStats = (employee, month, type) => {
 
 // Функция выгрузки в Excel
 const exportToExcel = () => {
+
   try {
-    // Создаем массив данных для Excel
     const excelData = []
-    
-    // Заголовки
-    const headers = ['Сотрудник', 'Отдел']
-    periods.value.forEach(p => headers.push(p.label))
-    excelData.push(headers)
-    
-    // Данные по сотрудникам
-    filteredEmployees.value.forEach(employee => {
-      const row = [
-        employee.name,
-        getDepartmentName(employee.departmentIds)
-      ]
-      
-      if (viewMode.value === 'month') {
-        // Для месяца выводим каждый день
-        for (let day = 1; day <= daysInMonth.value; day++) {
-          const scheduleItem = employee.schedule.find(s => s.day === day)
-          if (scheduleItem && scheduleItem.status) {
-            const status = getStatusText(scheduleItem.status)
-            const hours = scheduleItem.hours ? ` (${scheduleItem.hours})` : ''
-            row.push(status + hours)
-          } else {
-            row.push('—')
-          }
-        }
-      } else {
-        // Для дня/недели/года
-        periods.value.forEach(period => {
-          const status = getStatusForPeriod(employee, period)
-          const hours = getHoursForPeriod(employee, period)
+
+    if (viewMode.value === 'year') {
+      // ГОД: Каждый день отдельно (как месяц)
+      const headers = ['Сотрудник', 'Отдел']
+      yearDays.value.forEach(day => {
+        const monthStr = day.month.toString().padStart(2, '0')
+        const dayStr = day.day.toString().padStart(2, '0')
+        headers.push(`${monthStr}.${dayStr}`)
+      })
+      excelData.push(headers)
+
+      filteredEmployees.value.forEach(employee => {
+        const row = [employee.name, getDepartmentName(employee.departmentIds)]
+        
+        yearDays.value.forEach(day => {
+          const status = getStatusForYearDay(employee, day)
           if (status) {
+            const hours = employee.schedule.find(s => s.day === day.day && s.month === day.month)?.hours
             row.push(getStatusText(status) + (hours ? ` (${hours})` : ''))
           } else {
             row.push('—')
           }
         })
-      }
+        
+        excelData.push(row)
+      })
       
-      excelData.push(row)
-    })
+      // Узкие колонки для года
+      const colWidths = [{wch:30}, {wch:20}, ...Array(yearDays.value.length).fill({wch:8})]
+      
+      const ws = XLSX.utils.aoa_to_sheet(excelData)
+      ws['!cols'] = colWidths
+      
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'График_год_дни')
+      
+      const fileName = `график_работы_${currentDate.value.format('YYYY')}_все_дни.xlsx`
+      XLSX.writeFile(wb, fileName)
+      
+    } else {
+      // СТАРЫЙ КОД для остальных режимов
+      const headers = ['Сотрудник', 'Отдел']
+      periods.value.forEach(p => headers.push(p.label))
+      excelData.push(headers)
+      
+      filteredEmployees.value.forEach(employee => {
+        const row = [employee.name, getDepartmentName(employee.departmentIds)]
+        
+        if (viewMode.value === 'month') {
+          const y = num(currentYear.value)
+          const mo = num(currentMonth.value + 1)
+          for (let day = 1; day <= daysInMonth.value; day++) {
+            const scheduleItem = employee.schedule.find((s) => {
+              if (num(s.day) !== day || num(s.month) !== mo) return false
+              const iy =
+                s.year === undefined || s.year === null || s.year === '' ? y : num(s.year)
+              return iy === y
+            })
+            if (scheduleItem && scheduleItem.status) {
+              const status = getStatusText(scheduleItem.status)
+              const hours = scheduleItem.hours ? ` (${scheduleItem.hours})` : ''
+              row.push(status + hours)
+            } else {
+              row.push('—')
+            }
+          }
+        } else {
+          periods.value.forEach(period => {
+            const status = getStatusForPeriod(employee, period)
+            const hours = getHoursForPeriod(employee, period)
+            if (status) {
+              row.push(getStatusText(status) + (hours ? ` (${hours})` : ''))
+            } else {
+              row.push('—')
+            }
+          })
+        }
+        excelData.push(row)
+      })
+      
+      const colWidths = [{wch:30}, {wch:20}, ...Array(periods.value.length).fill({wch:15})]
+      
+      const ws = XLSX.utils.aoa_to_sheet(excelData)
+      ws['!cols'] = colWidths
+      
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, 'График работы')
+      
+      const fileName = `график_работы_${periodTitle.value.replace(/\s+/g, '_')}.xlsx`
+      XLSX.writeFile(wb, fileName)
+    }
     
-    // Создаем рабочий лист
-    const ws = XLSX.utils.aoa_to_sheet(excelData)
-    
-    // Настраиваем ширину колонок
-    const colWidths = []
-    colWidths.push({ wch: 30 }) // Сотрудник
-    colWidths.push({ wch: 20 }) // Отдел
-    periods.value.forEach(() => colWidths.push({ wch: 15 }))
-    ws['!cols'] = colWidths
-    
-    // Создаем рабочую книгу
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'График работы')
-    
-    // Сохраняем файл
-    const fileName = `график_работы_${periodTitle.value.replace(/\s+/g, '_')}.xlsx`
-    XLSX.writeFile(wb, fileName)
-    
-    console.log('Файл успешно выгружен:', fileName)
+    console.log('Файл успешно выгружен')
   } catch (error) {
     console.error('Ошибка при выгрузке в Excel:', error)
     alert('Произошла ошибка при выгрузке в Excel')
@@ -2167,9 +2291,70 @@ const scrollToCurrentMonth = async () => {
 
 // Получение статуса для дня в году
 const getStatusForYearDay = (employee, day) => {
-  // Ищем по месяцу и дню (не только по дню)
-  const scheduleItem = employee.schedule.find(s => s.day === day.day && s.month === day.month)
+  const scheduleItem = employee.schedule.find(
+    (s) => num(s.day) === day.day && num(s.month) === day.month
+  )
   return scheduleItem?.status || null
+}
+
+// Год: объединение подряд идущих дней с тем же статусом и часами (как в месяце)
+const getMergedYearDays = (employee) => {
+  updateTrigger.value
+  if (viewMode.value !== 'year') return []
+  const days = yearDays.value
+  if (!days.length) return []
+
+  const merged = []
+  let i = 0
+  while (i < days.length) {
+    const d = days[i]
+    const item = employee.schedule.find(
+      (s) => num(s.day) === d.day && num(s.month) === d.month
+    )
+    const status = item?.status ?? null
+    const hours = item?.hours ?? null
+    const details = item?.details ?? null
+    let span = 1
+    let j = i + 1
+    while (j < days.length) {
+      const d2 = days[j]
+      const item2 = employee.schedule.find(
+        (s) => num(s.day) === d2.day && num(s.month) === d2.month
+      )
+      const st2 = item2?.status ?? null
+      const h2 = item2?.hours ?? null
+      if (canMergeAdjacentStatus(st2, h2, status, hours)) {
+        span++
+        j++
+      } else {
+        break
+      }
+    }
+    merged.push({
+      yearDay: d,
+      span,
+      status,
+      hours,
+      details
+    })
+    i += span
+  }
+  return merged
+}
+
+const openYearMergedDialog = (employee, merged) => {
+  if (!merged.status) return
+  const startM = merged.yearDay.date.clone()
+  const endM = startM.clone().add(merged.span - 1, 'days')
+  openDateDialog(employee, {
+    startDay: merged.yearDay.day,
+    span: merged.span,
+    status: merged.status,
+    hours: merged.hours,
+    details: merged.details,
+    dateStart: startM.format('YYYY-MM-DD'),
+    dateEnd: endM.format('YYYY-MM-DD')
+  })
 }
 
 // Получение текста статуса для года (сокращенный)
@@ -2181,21 +2366,6 @@ const getYearStatusText = (status) => {
     'overtime': 'П'
   }
   return texts[status] || status
-}
-
-// Открытие диалога для дня в году
-const openYearDayDialog = (employee, day) => {
-  if (!getStatusForYearDay(employee, day)) return;
-  
-  const mergedDay = {
-    startDay: day.day,
-    span: 1,
-    status,
-    hours: employee.schedule.find(s => s.day === day.day && s.month === day.month)?.hours,
-    details: employee.schedule.find(s => s.day === day.day && s.month === day.month)?.details
-  }
-  
-  openDateDialog(employee, mergedDay)
 }
 
 // Переработанные часы в будние
@@ -2281,20 +2451,40 @@ const validateDates = () => {
     
     // Проверка пересечения с другими периодами
     if (selectedEmployee.value && selectedPeriod.value) {
-      const start = moment(startDate.value).date()
-      const end = moment(endDate.value).date()
-      
-      // Получаем все периоды кроме текущего
-      const otherPeriods = getMergedDays(selectedEmployee.value)
-        .filter(p => p.status && p.startDay !== selectedPeriod.value.startDay)
-      
-      // Проверяем пересечение
-      const hasOverlap = otherPeriods.some(period => {
-        const periodStart = period.startDay
-        const periodEnd = periodStart + period.span - 1
-        return !(end < periodStart || start > periodEnd)
+      const mergedList =
+        viewMode.value === 'week'
+          ? getMergedWeekPeriods(selectedEmployee.value)
+          : getMergedDays(selectedEmployee.value)
+
+      const otherPeriods = mergedList.filter((p) => {
+        if (!p.status) return false
+        if (selectedPeriod.value.dateStart && p.dateStart) {
+          return !(
+            p.dateStart === selectedPeriod.value.dateStart &&
+            p.dateEnd === selectedPeriod.value.dateEnd
+          )
+        }
+        return p.startDay !== selectedPeriod.value.startDay
       })
-      
+
+      const ns = moment(startDate.value).startOf('day')
+      const ne = moment(endDate.value).startOf('day')
+
+      const hasOverlap = otherPeriods.some((period) => {
+        let ps
+        let pe
+        if (period.dateStart && period.dateEnd) {
+          ps = moment(period.dateStart).startOf('day')
+          pe = moment(period.dateEnd).startOf('day')
+        } else {
+          ps = moment(currentDate.value).date(period.startDay).startOf('day')
+          pe = moment(currentDate.value)
+            .date(period.startDay + period.span - 1)
+            .startOf('day')
+        }
+        return ns.isSameOrBefore(pe, 'day') && ne.isSameOrAfter(ps, 'day')
+      })
+
       if (hasOverlap) {
         dateError.value = 'Новый период пересекается с существующим'
         return false
@@ -2305,7 +2495,18 @@ const validateDates = () => {
   return true
 }
 
-// Функция для объединения дней с одинаковыми статусами
+function scheduleItemForCalendarDate(employee, dayMoment) {
+  const y = dayMoment.year()
+  const m = dayMoment.month() + 1
+  const d = dayMoment.date()
+  return employee.schedule.find((s) => {
+    if (num(s.day) !== d || num(s.month) !== m) return false
+    if (s.year === undefined || s.year === null || s.year === '') return true
+    return num(s.year) === y
+  })
+}
+
+// Функция для объединения дней с одинаковыми статусами (текущий месяц)
 const getMergedDays = (employee) => {
   // Используем updateTrigger для принудительного пересчета
   updateTrigger.value
@@ -2317,12 +2518,19 @@ const getMergedDays = (employee) => {
   let currentDetails = null
   let startDay = 1
 
-  // Создаем карту статусов для быстрого доступа
+  const y = num(currentYear.value)
+  const m = num(currentMonth.value + 1)
+
+  // Только дни выбранного месяца (в schedule может быть весь год).
+  // day/month/year из CRM могут быть строками — сравниваем через Number.
   const scheduleMap = new Map()
-  employee.schedule.forEach(item => {
-    scheduleMap.set(item.day, item)
+  employee.schedule.forEach((item) => {
+    const iy = item.year === undefined || item.year === null || item.year === '' ? y : num(item.year)
+    if (iy !== y || num(item.month) !== m) return
+    const id = num(item.day)
+    if (!Number.isNaN(id)) scheduleMap.set(id, item)
   })
-  
+
   for (let day = 1; day <= daysInMonth.value; day++) {
     const scheduleItem = scheduleMap.get(day)
     const status = scheduleItem?.status || null
@@ -2338,7 +2546,7 @@ const getMergedDays = (employee) => {
       continue
     }
 
-    if (status === currentStatus && hours === currentHours) {
+    if (canMergeAdjacentStatus(status, hours, currentStatus, currentHours)) {
       currentSpan++
     } else {
       // Сохраняем предыдущую группу
@@ -2370,6 +2578,51 @@ const getMergedDays = (employee) => {
     }
   }
 
+  return merged
+}
+
+// Неделя: объединение подряд идущих дней с тем же статусом и часами (как в месяце)
+const getMergedWeekPeriods = (employee) => {
+  updateTrigger.value
+  if (viewMode.value !== 'week') return []
+  const weekPeriods = periods.value
+  if (!weekPeriods.length) return []
+
+  const merged = []
+  let i = 0
+  while (i < weekPeriods.length) {
+    const m = moment(weekPeriods[i].key)
+    const item = scheduleItemForCalendarDate(employee, m)
+    const status = item?.status ?? null
+    const hours = item?.hours ?? null
+    const details = item?.details ?? null
+    let span = 1
+    let j = i + 1
+    while (j < weekPeriods.length) {
+      const m2 = moment(weekPeriods[j].key)
+      const item2 = scheduleItemForCalendarDate(employee, m2)
+      const st2 = item2?.status ?? null
+      const h2 = item2?.hours ?? null
+      if (canMergeAdjacentStatus(st2, h2, status, hours)) {
+        span++
+        j++
+      } else {
+        break
+      }
+    }
+    const startM = moment(weekPeriods[i].key)
+    const endM = moment(weekPeriods[i + span - 1].key)
+    merged.push({
+      startDay: startM.date(),
+      span,
+      status,
+      hours,
+      details,
+      dateStart: startM.format('YYYY-MM-DD'),
+      dateEnd: endM.format('YYYY-MM-DD')
+    })
+    i += span
+  }
   return merged
 }
 
@@ -2432,8 +2685,13 @@ const openDateDialog = (employee, period) => {
   selectedPeriod.value = period
 
   // Устанавливаем даты на основе выбранного периода
-  startDate.value = moment(currentDate.value).date(period.startDay).format('YYYY-MM-DD')
-  endDate.value = moment(currentDate.value).date(period.startDay + period.span - 1).format('YYYY-MM-DD')
+  if (period.dateStart && period.dateEnd) {
+    startDate.value = period.dateStart
+    endDate.value = period.dateEnd
+  } else {
+    startDate.value = moment(currentDate.value).date(period.startDay).format('YYYY-MM-DD')
+    endDate.value = moment(currentDate.value).date(period.startDay + period.span - 1).format('YYYY-MM-DD')
+  }
   selectedStatus.value = period.status
   overtimeHours.value = period.hours || ''
 
@@ -2464,34 +2722,80 @@ const updatePeriod = async () => {
     }
 
     try {
-      // For remote: update ufCrm36_1773132483885 array
-      if (selectedPeriod.value.status === 'remote' && selectedPeriod.value.details?.id) {
+      const st = selectedPeriod.value.status
+      const itemId = selectedPeriod.value.details?.id
+
+      // Отпуск / отгул: те же UF, что при создании — затем перезагрузка графика
+      if ((st === 'vacation' || st === 'dayoff') && itemId) {
+        const startDateTime = moment(startDate.value + ' 00:00', 'YYYY-MM-DD HH:mm').format()
+        const endDateTime = moment(endDate.value + ' 23:59', 'YYYY-MM-DD HH:mm').format()
+        const typeId = st === 'vacation' ? 10372 : 10374
+        await new Promise((resolve, reject) => {
+          BX24.callMethod(
+            'crm.item.update',
+            {
+              entityTypeId: 1048,
+              id: itemId,
+              fields: {
+                ufCrm36_1737068344170: typeId,
+                ufCrm36_1737068421810: startDateTime,
+                ufCrm36_1737068451414: endDateTime,
+                ufCrm36_1737068503448: selectedPeriod.value.details?.additionalInfo ?? '',
+                categoryId: 108
+              }
+            },
+            (result) => {
+              if (result.error()) reject(new Error(String(result.error())))
+              else resolve(result.data())
+            }
+          )
+        })
+        await loadData()
+        dateDialog.value = false
+        return
+      }
+
+      // Удалёнка: массив дат + границы периода как в форме создания
+      if (st === 'remote' && itemId) {
         const newRemoteDates = []
         const start = moment(startDate.value)
         const end = moment(endDate.value)
-        
         let current = start.clone()
         while (current <= end) {
           newRemoteDates.push(current.format('YYYY-MM-DD'))
           current.add(1, 'day')
         }
-        
-        BX24.callMethod('crm.item.update', {
-          id: selectedPeriod.value.details.id,
-          fields: { ufCrm36_1773132483885: newRemoteDates }
-        }, (result) => {
-          if (result.error()) console.error(result.error())
-          else console.log('Remote dates updated:', newRemoteDates)
+        await new Promise((resolve, reject) => {
+          BX24.callMethod(
+            'crm.item.update',
+            {
+              entityTypeId: 1048,
+              id: itemId,
+              fields: {
+                ufCrm36_1773132483885: newRemoteDates,
+                ufCrm36_1737068421810: newRemoteDates[0],
+                ufCrm36_1737068451414: newRemoteDates[newRemoteDates.length - 1],
+                categoryId: 168
+              }
+            },
+            (result) => {
+              if (result.error()) reject(new Error(String(result.error())))
+              else resolve(result.data())
+            }
+          )
         })
+        await loadData()
+        dateDialog.value = false
+        return
       }
 
-      // Local UI update (same as before)
+      // Переработка и прочее без отдельного CRM-пути — локальное обновление (устар.)
       const oldDetails = selectedPeriod.value.details
       for (let day = selectedPeriod.value.startDay; day < selectedPeriod.value.startDay + selectedPeriod.value.span; day++) {
-        const index = selectedEmployee.value.schedule.findIndex(s => s.day === day)
+        const index = selectedEmployee.value.schedule.findIndex((s) => s.day === day)
         if (index !== -1) selectedEmployee.value.schedule.splice(index, 1)
       }
-      
+
       const startDay = moment(startDate.value).date()
       const endDay = moment(endDate.value).date()
       for (let day = startDay; day <= endDay; day++) {
@@ -2500,28 +2804,28 @@ const updatePeriod = async () => {
           scheduleItem.hours = overtimeHours.value
         }
         if (oldDetails) scheduleItem.details = oldDetails
-        
-        const existingIndex = selectedEmployee.value.schedule.findIndex(s => s.day === day)
+
+        const existingIndex = selectedEmployee.value.schedule.findIndex((s) => s.day === day)
         if (existingIndex !== -1) {
           selectedEmployee.value.schedule[existingIndex] = scheduleItem
         } else {
           selectedEmployee.value.schedule.push(scheduleItem)
         }
       }
-      
+
       selectedEmployee.value.schedule.sort((a, b) => a.day - b.day)
       if (selectedEmployeeForStats.value?.id === selectedEmployee.value.id) {
         selectedEmployeeForStats.value = { ...selectedEmployee.value }
       }
-      
+
       updateTrigger.value++
       console.log('Период обновлен:', selectedStatus.value)
+      dateDialog.value = false
     } catch (error) {
       console.error('Ошибка обновления:', error)
+      alert(error?.message || 'Ошибка обновления периода')
     }
   }
-  
-  dateDialog.value = false
 }
 
 // Enhanced deletePeriod with CRM support
@@ -2536,8 +2840,57 @@ const deletePeriod = (crmDelete = true) => {
       alert('Руководитель не может удалять переработки')
       return
     }
+    if (selectedPeriod.value.status === 'remote' && !canEditRemoteOrOvertime(currentUserId, selectedEmployee.value.id, 'remote')) {
+      alert('Нет прав на удаление этой удалёнки')
+      return
+    }
     if (crmDelete && selectedPeriod.value?.details?.id) {
-      // CRM delete + refresh
+      const det = selectedPeriod.value.details
+      const normD = (d) => moment(d).format('YYYY-MM-DD')
+
+      // Удалёнка с массивом: несколько слотов в одном элементе — убираем только даты слота из UF
+      if (
+        selectedPeriod.value.status === 'remote' &&
+        Array.isArray(det.remoteDates) &&
+        det.remoteDates.length > 0 &&
+        Array.isArray(det.allRemoteDates) &&
+        det.allRemoteDates.length > 0
+      ) {
+        const removeSet = new Set(det.remoteDates.map(normD))
+        const remaining = det.allRemoteDates
+          .map(normD)
+          .filter((d) => !removeSet.has(d))
+          .sort()
+
+        if (remaining.length > 0) {
+          BX24.callMethod(
+            'crm.item.update',
+            {
+              entityTypeId: 1048,
+              id: det.id,
+              fields: {
+                ufCrm36_1773132483885: remaining,
+                ufCrm36_1737068421810: remaining[0],
+                ufCrm36_1737068451414: remaining[remaining.length - 1]
+              }
+            },
+            (result) => {
+              if (result.error()) {
+                alert('Ошибка обновления удалёнки в CRM: ' + result.error())
+                console.error(result.error())
+              } else {
+                console.log('CRM remote dates updated, remaining:', remaining)
+              }
+            }
+          )
+          loadData()
+          dateDialog.value = false
+          return
+        }
+        // remaining пуст — удаляем элемент целиком (ниже)
+      }
+
+      // Один слот / не массив / после удаления последнего слота — полное удаление элемента
       BX24.callMethod('crm.item.delete', {
         entityTypeId: 1048,
         id: selectedPeriod.value.details.id
@@ -2589,7 +2942,6 @@ const openOvertimeDialog = () => {
   if (isManager.value) {
     // Managers: open full overtime stats view
     selectedEmployeeForStats.value = null // Clear to show all
-    return
   }
   // Employees: normal add flow
   overtimeForm.value = {
@@ -2642,11 +2994,12 @@ const openOvertimeViewDialog = (details) => {
 
 const openOvertimeEditDialog = (employee, period) => {
   const currentUserId = currentUser.value?.ID
-  if (isManager.value || !canEditRemoteOrOvertime(currentUserId, employee.id, 'overtime')) {
+  // Своя переработка — можно редактировать и руководителю; чужая у руководителя — только просмотр
+  if (!canEditRemoteOrOvertime(currentUserId, employee.id, 'overtime')) {
     openOvertimeViewDialog(period.details)
     return
   }
-  // Normal edit flow for self
+  // Редактирование (себе или сотруднику — для переработки только себе)
   console.log('Редактирование переработки:', period);
   const extractTime = (dateTime) => {
     if (!dateTime) return ''
@@ -2696,8 +3049,9 @@ const saveOvertime = async () => {
     overtimeError.value = 'Не удалось определить текущего пользователя'
     return
   }
-  if (isManager.value || !canEditRemoteOrOvertime(currentUserId, currentUserId, 'overtime')) {
-    overtimeError.value = 'Руководитель не может редактировать переработки'
+  // Добавление/редактирование только своей переработки (assignedById = текущий пользователь)
+  if (!canEditRemoteOrOvertime(currentUserId, currentUserId, 'overtime')) {
+    overtimeError.value = 'Нет прав на сохранение переработки'
     return
   }
   if (!isOvertimeValid.value) {
@@ -2931,7 +3285,7 @@ const saveVacation = async () => {
       ufCrm36_1737068451414: endDateTime,
       ufCrm36_1737068503448: vacationForm.value.additionalInfo || '',
       categoryId: 108,
-      stageId: 'DT1048_108:SUCCESS'
+      stageId: isManager.value ? 'DT1048_108:SUCCESS' : 'DT1048_108:UC_NQK5LN'
     }
 
       const empData = { ...commonData, ASSIGNED_BY_ID: vacationForm.value.selectedEmployees ?? currentUserId }
@@ -2979,7 +3333,7 @@ const saveDayoff = async () => {
       ufCrm36_1737068451414: endDateTime,
       ufCrm36_1737068503448: dayoffForm.value.additionalInfo || '',
       categoryId: 108,
-      stageId: 'DT1048_108:SUCCESS'
+      stageId: isManager.value ? 'DT1048_108:SUCCESS' : 'DT1048_108:UC_NQK5LN'
     }
 
     // Determine target employee IDs
